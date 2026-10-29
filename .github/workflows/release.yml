@@ -125,11 +125,20 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $repo = 'gzdiky-ui/DeltaNFD'
-          $ver = $env:VERSION
-          $display = $env:DISPLAY
-          $exeName = ${env:EXE-NAME}
-          $srcZip = ${env:SRC-ZIP}
           $stage = '_buildcheck\release-assets'
+
+          # Derive release metadata locally (no cross-step env propagation)
+          $csproj = Get-Content -LiteralPath 'src/DeltaNFD/DeltaNFD.csproj' -Raw
+          $ver = [regex]::Match($csproj, '<Version>([^<]+)</Version>').Groups[1].Value
+          $display = [regex]::Match($csproj, '<InformationalVersion>([^<]+)</InformationalVersion>').Groups[1].Value
+          if ([string]::IsNullOrWhiteSpace($ver) -or [string]::IsNullOrWhiteSpace($display)) { throw 'version/display parse failed' }
+          $exeItem = Get-ChildItem -Path $stage -Filter '*.exe' | Select-Object -First 1
+          if ($null -eq $exeItem) { throw 'installer exe not found in ' + $stage }
+          $exeName = $exeItem.Name
+          $zipItem = Get-ChildItem -Path $stage -Filter '*.zip' | Select-Object -First 1
+          if ($null -eq $zipItem) { throw 'source zip not found in ' + $stage }
+          $srcZip = $zipItem.Name
+          Write-Host "META ver=$ver display=$display exe=$exeName srcZip=$srcZip"
 
           $encodedExe = [System.Uri]::EscapeDataString($exeName)
           $dlBase = "https://github.com/$repo/releases/download/v$ver/"
