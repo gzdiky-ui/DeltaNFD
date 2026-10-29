@@ -25,7 +25,12 @@ $ErrorActionPreference = "Stop"
 $repo = Split-Path -Parent $PSScriptRoot
 $frontendProject = Join-Path $repo "src/DeltaNFD/DeltaNFD.csproj"
 & (Join-Path $repo 'tools/Check-DeploymentScript.ps1') -ScriptPath (Join-Path $PSScriptRoot 'DeploymentControl.ps1')
-if ($LASTEXITCODE -ne 0) { throw 'Installer deployment script validation failed before build.' }
+# The gate throws on failure. On a pure in-process run (no native command executed)
+# $LASTEXITCODE stays $null, and $null -ne 0 is True in Windows PowerShell 5.1, so
+# a clean return must be treated as success (exit code 0).
+$gateExit = $LASTEXITCODE
+if ($null -eq $gateExit) { $gateExit = 0 }
+if ($gateExit -ne 0) { throw 'Installer deployment script validation failed before build.' }
 $out = [IO.Path]::GetFullPath($(if ([IO.Path]::IsPathRooted($OutDir)) { $OutDir } else { Join-Path $repo $OutDir }))
 if (Test-Path -LiteralPath $out) { throw "Output must be a new directory: $out" }
 $componentLayout = $out + '.components-' + [Guid]::NewGuid().ToString('N')
