@@ -127,8 +127,8 @@ jobs:
           $repo = 'gzdiky-ui/DeltaNFD'
           $ver = $env:VERSION
           $display = $env:DISPLAY
-          $exeName = $env:'EXE-NAME'
-          $srcZip = $env:'SRC-ZIP'
+          $exeName = ${env:EXE-NAME}
+          $srcZip = ${env:SRC-ZIP}
           $stage = '_buildcheck\release-assets'
 
           $encodedExe = [System.Uri]::EscapeDataString($exeName)
