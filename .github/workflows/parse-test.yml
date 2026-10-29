@@ -1,0 +1,17 @@
+name: ParseTest
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: windows-2022
+    steps:
+      - name: env-quote test
+        shell: pwsh
+        run: |
+          Write-Host ("PSVER=" + $PSVersionTable.PSVersion.ToString())
+          $a = $env:'EXE-NAME'
+          Write-Host "A-OK [$a]"
+          $b = $env:EXENAME
+          Write-Host "B-OK [$b]"
+          $c = $env:'SRC-ZIP'
+          Write-Host "C-OK [$c]"
