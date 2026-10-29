@@ -1,0 +1,173 @@
+name: Release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Restore verified binary build inputs
+        id: source-assets-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: _buildcheck/source-assets-cache
+          key: source-assets-v1-e4d70645be7e0e67
+
+      - name: Prepare fixed published build inputs (never execute installers)
+        run: python tools/prepare-source-assets.py
+
+      - name: Save verified binary build inputs
+        if: steps.source-assets-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: _buildcheck/source-assets-cache
+          key: source-assets-v1-e4d70645be7e0e67
+
+      - name: Install Inno Setup 6
+        run: choco install innosetup -y --no-progress
+
+      - name: Build installer (self-contained frontend + backends)
+        run: cmd /c "installer\make-installer.cmd"
+
+      - name: Assemble release assets
+        id: assets
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $csproj = Get-Content -LiteralPath 'src/DeltaNFD/DeltaNFD.csproj' -Raw
+          $version = [regex]::Match($csproj, '<Version>([^<]+)</Version>').Groups[1].Value
+          $display = [regex]::Match($csproj, '<InformationalVersion>([^<]+)</InformationalVersion>').Groups[1].Value
+          Write-Host "version=$version display=$display"
+
+          # Locate the Inno Setup output produced by make-installer.cmd
+          $pkgDir = Get-ChildItem -Path '_buildcheck' -Directory -Filter 'installer-package-*' |
+            Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          if ($null -eq $pkgDir) { throw 'installer-package-* directory not found under _buildcheck' }
+          $exe = Get-ChildItem -Path $pkgDir.FullName -Filter '*.exe' | Select-Object -First 1
+          if ($null -eq $exe) { throw 'installer exe not found in ' + $pkgDir.FullName }
+
+          $stage = '_buildcheck\release-assets'
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          $exeDst = Join-Path $stage $exe.Name
+          Copy-Item -LiteralPath $exe.FullName -Destination $exeDst
+          $exeHash = (Get-FileHash -LiteralPath $exeDst -Algorithm SHA256).Hash.ToLowerInvariant()
+          Set-Content -LiteralPath (Join-Path $stage ($exe.Name + '.sha256')) -Value "$exeHash  $($exe.Name)" -Encoding UTF8
+
+          # Fork-local auto-update manifest (points at this repo's release page)
+          $encodedName = [System.Uri]::EscapeDataString($exe.Name)
+          Set-Content -LiteralPath '_buildcheck\release-notes.txt' -Value @'
+          检测到 NVIDIA 596 系驱动时，运行库页面隐藏 14.44 可选基线并使用默认 14.42 基线；驱动无法确认时会提示玩家自行核对。其他驱动仍可选择两套基线，运行库防护可正常开启。
+
+          本版包含此前本地验证的运行库 DLL 完整复检、缺失后的受控恢复、帧格电源限制兼容修复和页面会话修复。运行库及系统操作请先关闭游戏并按页面提示预览确认。
+          '@ -Encoding UTF8
+          & powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File 'installer\make-update-manifest.ps1' `
+            -InstallerPath $exeDst `
+            -Version $version `
+            -InstallerUrl ("https://github.com/gzdiky-ui/DeltaNFD/releases/download/v" + $version + '/' + $encodedName) `
+            -DisplayVersion $display `
+            -ReleaseTag ("v" + $version) `
+            -ReleasePageUrl ("https://github.com/gzdiky-ui/DeltaNFD/releases/tag/v" + $version) `
+            -NotesFile '_buildcheck\release-notes.txt' `
+            -OutFile (Join-Path $stage 'update.json')
+          if ($LASTEXITCODE -ne 0) { throw 'make-update-manifest.ps1 failed' }
+
+          # Source archive
+          $srcZip = Join-Path $stage ("DeltaNFD_Source_" + $version + ".zip")
+          git archive --format=zip --prefix ("DeltaNFD_Source_" + $version + '/') HEAD -o $srcZip
+          if ($LASTEXITCODE -ne 0) { throw 'git archive failed' }
+          $srcHash = (Get-FileHash -LiteralPath $srcZip -Algorithm SHA256).Hash.ToLowerInvariant()
+          Set-Content -LiteralPath ($srcZip + '.sha256') -Value "$srcHash  $($srcZip.Split('\')[-1])" -Encoding UTF8
+
+          # SHA256SUMS.txt over all published assets
+          $sums = Get-ChildItem $stage -File |
+            Where-Object { $_.Name -notlike '*.sha256' -and $_.Name -ne 'SHA256SUMS.txt' } |
+            ForEach-Object {
+              $h = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+              "$h  $($_.Name)"
+            }
+          Set-Content -LiteralPath (Join-Path $stage 'SHA256SUMS.txt') -Value $sums -Encoding UTF8
+
+          Get-ChildItem $stage -File | ForEach-Object { Write-Host "asset: $($_.Name) ($([math]::Round($_.Length/1MB,1)) MB)" }
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "display=$display" >> $env:GITHUB_OUTPUT
+          "exe-name=$($exe.Name)" >> $env:GITHUB_OUTPUT
+          "exe-hash=$exeHash" >> $env:GITHUB_OUTPUT
+          "src-zip=DeltaNFD_Source_${version}.zip" >> $env:GITHUB_OUTPUT
+
+      - name: Create GitHub release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $repo = 'gzdiky-ui/DeltaNFD'
+          $ver = $env:VERSION
+          $display = $env:DISPLAY
+          $exeName = $env:'EXE-NAME'
+          $srcZip = $env:'SRC-ZIP'
+          $stage = '_buildcheck\release-assets'
+
+          $encodedExe = [System.Uri]::EscapeDataString($exeName)
+          $dlBase = "https://github.com/$repo/releases/download/v$ver/"
+          $body = @"
+          ## $display (v$ver)
+
+          检测到 NVIDIA 596 系驱动时，运行库页面隐藏 14.44 可选基线并使用默认 14.42 基线；驱动无法确认时会提示玩家自行核对。其他驱动仍可选择两套基线，运行库防护可正常开启。
+
+          本版包含此前本地验证的运行库 DLL 完整复检、缺失后的受控恢复、帧格电源限制兼容修复和页面会话修复。运行库及系统操作请先关闭游戏并按页面提示预览确认。
+
+          - [下载安装包]($dlBase$encodedExe)
+          - [源码包]($dlBase$srcZip)
+          - 校验：见 `SHA256SUMS.txt` / 各文件 `.sha256`
+          "@
+
+          $headers = @{
+            Authorization = "Bearer $env:GH_TOKEN"
+            'X-GitHub-Api-Version' = '2022-11-28'
+            Accept = 'application/vnd.github+json'
+          }
+          $payload = @{
+            tag_name = "v$ver"
+            name = $display
+            body = $body
+            draft = $false
+            prerelease = $true
+          } | ConvertTo-Json -Depth 4
+          $rel = Invoke-RestMethod -Method Post -Uri "https://api.github.com/repos/$repo/releases" `
+            -Headers $headers -ContentType 'application/json; charset=utf-8' -Body ([System.Text.Encoding]::UTF8.GetBytes($payload))
+          Write-Host "release created: $($rel.html_url)"
+
+          # Upload assets (multipart via raw bytes keeps unicode names intact)
+          foreach ($f in (Get-ChildItem $stage -File | Sort-Object Name)) {
+            $apiName = [System.Uri]::EscapeDataString($f.Name)
+            $uri = "https://api.github.com/repos/$repo/releases/$($rel.id)/assets?name=$apiName"
+            $bytes = [System.IO.File]::ReadAllBytes($f.FullName)
+            $resp = Invoke-RestMethod -Method Post -Uri $uri -Headers $headers `
+              -ContentType 'application/octet-stream' -Body $bytes
+            Write-Host "uploaded: $($resp.name) -> $($resp.browser_download_url)"
+          }
+          Write-Host "RELEASE_URL=$($rel.html_url)"
