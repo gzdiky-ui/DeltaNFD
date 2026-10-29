@@ -72,13 +72,16 @@ jobs:
 
           $stage = '_buildcheck\release-assets'
           New-Item -ItemType Directory -Force -Path $stage | Out-Null
-          $exeDst = Join-Path $stage $exe.Name
+          # ASCII-safe asset name (GitHub mangles CJK asset names in URLs/API)
+          $safeName = ($exe.Name -replace '[^\u0020-\u007E]', '') -replace '__+', '_' -replace '^_+|_+$', ''
+          if ($safeName -eq '') { $safeName = $exe.Name }
+          $exeDst = Join-Path $stage $safeName
           Copy-Item -LiteralPath $exe.FullName -Destination $exeDst
           $exeHash = (Get-FileHash -LiteralPath $exeDst -Algorithm SHA256).Hash.ToLowerInvariant()
-          Set-Content -LiteralPath (Join-Path $stage ($exe.Name + '.sha256')) -Value "$exeHash  $($exe.Name)" -Encoding UTF8
+          Set-Content -LiteralPath (Join-Path $stage ($safeName + '.sha256')) -Value "$exeHash  $safeName" -Encoding UTF8
 
           # Fork-local auto-update manifest (points at this repo's release page)
-          $encodedName = [System.Uri]::EscapeDataString($exe.Name)
+          $encodedName = [System.Uri]::EscapeDataString($safeName)
           Set-Content -LiteralPath '_buildcheck\release-notes.txt' -Value @'
           检测到 NVIDIA 596 系驱动时，运行库页面隐藏 14.44 可选基线并使用默认 14.42 基线；驱动无法确认时会提示玩家自行核对。其他驱动仍可选择两套基线，运行库防护可正常开启。
 
@@ -114,7 +117,7 @@ jobs:
           Get-ChildItem $stage -File | ForEach-Object { Write-Host "asset: $($_.Name) ($([math]::Round($_.Length/1MB,1)) MB)" }
           "version=$version" >> $env:GITHUB_OUTPUT
           "display=$display" >> $env:GITHUB_OUTPUT
-          "exe-name=$($exe.Name)" >> $env:GITHUB_OUTPUT
+          "exe-name=$safeName" >> $env:GITHUB_OUTPUT
           "exe-hash=$exeHash" >> $env:GITHUB_OUTPUT
           "src-zip=DeltaNFD_Source_${version}.zip" >> $env:GITHUB_OUTPUT
 
