@@ -166,14 +166,33 @@ jobs:
             draft = $false
             prerelease = $true
           } | ConvertTo-Json -Depth 4
-          $rel = Invoke-RestMethod -Method Post -Uri "https://api.github.com/repos/$repo/releases" `
-            -Headers $headers -ContentType 'application/json; charset=utf-8' -Body ([System.Text.Encoding]::UTF8.GetBytes($payload))
-          Write-Host "release created: $($rel.html_url)"
+          # Idempotent: reuse an existing release with the same tag if present
+          $rel = $null
+          try {
+            $rel = Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/releases/tags/v$ver" -Headers $headers
+          } catch {}
+          if ($rel) {
+            Write-Host "reusing existing release: $($rel.html_url)"
+          } else {
+            $rel = Invoke-RestMethod -Method Post -Uri "https://api.github.com/repos/$repo/releases" `
+              -Headers $headers -ContentType 'application/json; charset=utf-8' -Body ([System.Text.Encoding]::UTF8.GetBytes($payload))
+            Write-Host "release created: $($rel.html_url)"
+          }
 
-          # Upload assets (multipart via raw bytes keeps unicode names intact)
+          # Skip assets that are already uploaded to this release (safe re-runs)
+          $existingNames = @()
+          if ($rel.assets_count -gt 0) {
+            $existingNames = (Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/releases/$($rel.id)/assets?per_page=100" -Headers $headers).name
+          }
+
+          # Upload assets via the release's upload_url (dedicated uploads host)
           foreach ($f in (Get-ChildItem $stage -File | Sort-Object Name)) {
+            if ($existingNames -contains $f.Name) {
+              Write-Host "skip existing asset: $($f.Name)"
+              continue
+            }
             $apiName = [System.Uri]::EscapeDataString($f.Name)
-            $uri = "https://api.github.com/repos/$repo/releases/$($rel.id)/assets?name=$apiName"
+            $uri = $rel.upload_url -replace '\{\?name,label\}', "?name=$apiName"
             $bytes = [System.IO.File]::ReadAllBytes($f.FullName)
             $resp = Invoke-RestMethod -Method Post -Uri $uri -Headers $headers `
               -ContentType 'application/octet-stream' -Body $bytes
