@@ -21,7 +21,15 @@ param(
     [ValidateSet('true','false')][string]$RuntimeUiEnabled = 'true'
 )
 
-$ErrorActionPreference = "Stop"
+$ErrorActionPreference = 'Stop'
+# Windows PowerShell 5.1 sessions that inherit PowerShell Core module directories in
+# PSModulePath can fail to resolve built-in Utility cmdlets (e.g. Get-FileHash).
+# Pin the session to the native Windows PowerShell module locations before first use.
+$env:PSModulePath = 'C:\Program Files\WindowsPowerShell\Modules;C:\Windows\system32\WindowsPowerShell\v1.0\Modules'
+$diagGfh = (Get-Command Get-FileHash -ErrorAction SilentlyContinue)
+$diagIc = (Get-Command Import-Csv -ErrorAction SilentlyContinue)
+Write-Host ('DIAG ps=' + $PSVersionTable.PSVersion + ' GetFileHash=' + [string]$diagGfh.ModuleName + ' ImportCsv=' + [string]$diagIc.ModuleName)
+
 $repo = Split-Path -Parent $PSScriptRoot
 $frontendProject = Join-Path $repo "src/DeltaNFD/DeltaNFD.csproj"
 & (Join-Path $repo 'tools/Check-DeploymentScript.ps1') -ScriptPath (Join-Path $PSScriptRoot 'DeploymentControl.ps1')
